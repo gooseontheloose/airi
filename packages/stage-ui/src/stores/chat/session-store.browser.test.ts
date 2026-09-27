@@ -194,6 +194,45 @@ describe('chat session synchronization', () => {
     expect(followerChatStore.activeSessionId).toBe(newSessionId)
   })
 
+  it('moves the leader (voice) window to the chat picked in a follower chat window', async () => {
+    // ROOT CAUSE:
+    //
+    // Voice input is sent from the main stage window, the sync leader, into its own selected
+    // chat. Picking or creating a chat in the chat window only changed the chat window's
+    // selection, so the leader kept sending voice turns to the old chat.
+    //
+    // We fixed this by making `setActiveSession` also call the synced
+    // `rememberSelectedSession` action, which moves the persisted pointer and the leader's
+    // selection to the chosen chat.
+    const namespace = `chat-session:${crypto.randomUUID()}`
+    const leaderContext = createSyncedContext(namespace, 'leader-only')
+    await vi.waitFor(() => expect(leaderContext.runtime.isLeader()).toBe(true))
+
+    setActivePinia(leaderContext.pinia)
+    const leaderChatStore = useChatSessionStore()
+    await leaderChatStore.initialize()
+    const previousSessionId = leaderChatStore.activeSessionId
+
+    const followerContext = createSyncedContext(namespace, 'follower-only')
+    setActivePinia(followerContext.pinia)
+    const followerChatStore = useChatSessionStore()
+    await vi.waitFor(() => expect(followerContext.runtime.getLeaderId()).toBe(leaderContext.runtime.participantId))
+    await followerChatStore.initialize()
+
+    const newSessionId = await followerChatStore.createSession('default', { setActive: false })
+    await followerChatStore.setActiveSession(newSessionId)
+
+    expect(previousSessionId).not.toBe(newSessionId)
+    expect(leaderChatStore.activeSessionId).toBe(newSessionId)
+    expect(leaderChatStore.index?.characters.default?.activeSessionId).toBe(newSessionId)
+    await vi.waitFor(() => expect(followerChatStore.index?.characters.default?.activeSessionId).toBe(newSessionId))
+    expect(followerChatStore.activeSessionId).toBe(newSessionId)
+
+    // Going back to the earlier chat moves the leader back too.
+    await followerChatStore.setActiveSession(previousSessionId)
+    expect(leaderChatStore.activeSessionId).toBe(previousSessionId)
+  })
+
   it('keeps the leader chat snapshot when new followers receive the auth identity', async () => {
     // ROOT CAUSE:
     //

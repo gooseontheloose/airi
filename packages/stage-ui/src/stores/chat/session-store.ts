@@ -631,10 +631,13 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     // Persisted character fallback is shared, but live selection is local to
     // the window that was displaying the deleted session.
     if (fallbackId && characterIndex) {
-      characterIndex.activeSessionId = fallbackId
-      if (wasActive) {
-        activeSessionId.value = fallbackId
-        await loadSession(fallbackId)
+      // Keep the chosen chat unless it is the one deleted. Deleting some other chat must not move
+      // the leader (the window that sends voice turns) away from the chat the user picked.
+      if (!characterIndex.sessions[characterIndex.activeSessionId])
+        characterIndex.activeSessionId = fallbackId
+      if (wasActive || (characterId === getCurrentCharacterId() && activeSessionId.value !== characterIndex.activeSessionId)) {
+        activeSessionId.value = characterIndex.activeSessionId
+        await loadSession(characterIndex.activeSessionId)
       }
       await persistIndex()
       return
@@ -1369,7 +1372,13 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     },
   })
 
-  /** Selects and hydrates one conversation only in the current window. */
+  /**
+   * Selects and hydrates one conversation, and remembers it as the character's current chat.
+   *
+   * Voice input is sent from the main stage window into that window's own selection. A choice
+   * made only in the chat window therefore left voice turns going to the old chat, so the
+   * choice is also handed to the leader through {@link rememberSelectedSession}.
+   */
   async function setActiveSession(sessionId: string) {
     activeSessionId.value = sessionId
 
@@ -1377,6 +1386,31 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       await useChatSessionStore().loadSession(sessionId)
     else if (!hasKnownSession(sessionId))
       ensureSession(sessionId)
+
+    if (ready.value)
+      await useChatSessionStore().rememberSelectedSession(sessionId)
+  }
+
+  /**
+   * Moves the character's persisted "current chat" pointer to `sessionId`.
+   *
+   * Synced, so it runs on the leader: the main stage window, which sends voice turns. Other
+   * windows receive the pointer in the index snapshot. Sessions missing from the index
+   * (not yet loaded or already deleted) are ignored.
+   */
+  async function rememberSelectedSession(sessionId: string) {
+    const characterId = sessionMetas.value[sessionId]?.characterId
+    const characterIndex = characterId ? getCharacterIndex(characterId) : null
+    if (!characterIndex?.sessions[sessionId])
+      return
+
+    if (characterIndex.activeSessionId !== sessionId) {
+      characterIndex.activeSessionId = sessionId
+      await persistIndex()
+    }
+    // The leader's selection is where voice turns go; follow the choice only for the character on stage.
+    if (characterId === getCurrentCharacterId())
+      activeSessionId.value = sessionId
   }
 
   function applyRemoteSnapshot(snapshot: {
@@ -1621,6 +1655,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     messages,
 
     setActiveSession,
+    rememberSelectedSession,
     applyRemoteSnapshot,
     getSnapshot,
     cleanupMessages,
@@ -1670,6 +1705,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       'loadSession',
       'pushMessageToCloud',
       'refreshSession',
+      'rememberSelectedSession',
       'resetAllSessions',
     ],
     state: true,
